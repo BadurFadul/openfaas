@@ -1,0 +1,322 @@
+# Video Preview Generator with OpenFaaS
+
+This project implements a serverless function using OpenFaaS that generates video previews. It takes a URL to a video, processes it using FFmpeg to create a short preview, and returns the preview video that can be saved locally or uploaded to S3-compatible storage.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+  - [Setting up Kubernetes](#setting-up-kubernetes)
+  - [Installing OpenFaaS](#installing-openfaas)
+  - [Accessing OpenFaaS](#accessing-openfaas)
+  - [Setting up S3 Storage (Optional)](#setting-up-s3-storage-optional)
+- [Deploying the Video Preview Function](#deploying-the-video-preview-function)
+- [Using the Video Preview Generator](#using-the-video-preview-generator)
+- [Troubleshooting](#troubleshooting)
+- [Advanced Configuration](#advanced-configuration)
+
+## Overview
+
+The Video Preview Generator:
+- Fetches videos from a provided URL
+- Uses FFmpeg to create a compressed preview by sampling sections of the original video
+- Outputs a short, lightweight preview that maintains the original video's key content
+- Supports saving to local storage or S3-compatible object storage
+- Runs as a serverless function in OpenFaaS
+
+## Prerequisites
+
+- **Docker** (version 20.10+)
+  - Required for building function images and running Kubernetes locally
+  - [Install Docker](https://docs.docker.com/get-docker/)
+
+- **Kubernetes cluster** (one of the following):
+  - **Minikube** (v1.25+) for local development
+    - [Install Minikube](https://minikube.sigs.k8s.io/docs/start/)
+  - **kind** (v0.14+) as an alternative
+    - [Install kind](https://kind.sigs.k8s.io/docs/user/quick-start/)
+  - **k3d** (v5.0+) as another alternative
+    - [Install k3d](https://k3d.io/#installation)
+
+- **kubectl** (version compatible with your cluster)
+  - CLI tool for interacting with Kubernetes
+  - [Install kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl/)
+
+
+- **faas-cli**
+  - Command-line interface for OpenFaaS
+  - [Install faas-cli](https://docs.openfaas.com/cli/install/)
+
+- **Python 3.6+**
+  - For running the client script
+  - [Install Python](https://www.python.org/downloads/)
+
+
+## Installation
+
+### Setting up Kubernetes
+
+1. **Start a Kubernetes cluster using Minikube**:
+
+
+   ```bash
+   # Create a cluster with Kind
+   kind create cluster --name openfaas
+   
+   # Verify it's running
+   kubectl cluster-info --context kind-openfaas
+   ```
+
+2. **Ensure your kubectl context is set correctly**:
+
+   ```bash
+   # Check current context
+   kubectl config current-context
+   
+   # If needed, switch to the right context
+   kubectl config use-context <your-context-name>
+   ```
+
+### Installing OpenFaaS
+
+
+1. **Install OpenFaaS using arkade**:
+
+   ```bash
+   arkade install openfaas
+   ```
+
+4. **Wait for all OpenFaaS components to start**:
+
+   ```bash
+   kubectl rollout status -n openfaas deploy/gateway -w
+   ```
+
+### Accessing OpenFaaS
+
+1. **Get the admin password**:
+
+   ```bash
+   PASSWORD=$(kubectl -n openfaas get secret basic-auth -o jsonpath="{.data.basic-auth-password}" | base64 --decode)
+   echo "OpenFaaS admin password: $PASSWORD"
+   # Make note of this password!
+   ```
+
+2. **Port-forward the gateway service to access the OpenFaaS UI**:
+
+   ```bash
+   kubectl port-forward -n openfaas svc/gateway 8080:8080 &
+   ```
+
+3. **Log in to OpenFaaS CLI**:
+
+   ```bash
+   export OPENFAAS_URL=http://127.0.0.1:8080
+   echo -n $PASSWORD | faas-cli login --username admin --password-stdin
+   ```
+
+4. **Verify that OpenFaaS is working**:
+
+   ```bash
+   # List available functions (should be empty initially)
+   faas-cli list
+   ```
+
+5. **Access the OpenFaaS UI**:
+   
+   Open your browser and navigate to http://127.0.0.1:8080/ui/
+   - Username: admin
+   - Password: (use the password you retrieved earlier)
+
+### Setting up S3 Storage (Optional)
+
+This step is optional if you want to store video previews in S3-compatible storage.
+
+1. **Create a bucket in an S3-compatible storage service** (like AWS S3, Linode Object Storage, MinIO):
+
+   - For AWS S3: Use the AWS Console or CLI to create a bucket
+   - For Linode: Create a bucket in Linode Object Storage (Stockholm region or other)
+   - For MinIO: Follow MinIO documentation to create a bucket
+
+2. **Create secrets for S3 authentication**:
+
+   ```bash
+   # Create directory for secrets
+   mkdir -p .secrets
+   
+   # Store your S3 credentials (replace with your actual credentials)
+   echo "YOUR_ACCESS_KEY" > .secrets/video-preview-s3-key
+   echo "YOUR_SECRET_KEY" > .secrets/video-preview-s3-secret
+   
+   # Create the secrets in OpenFaaS
+   faas-cli secret create video-preview-s3-key --from-file .secrets/video-preview-s3-key
+   faas-cli secret create video-preview-s3-secret --from-file .secrets/video-preview-s3-secret
+   ```
+
+## Deploying the Video Preview Function
+
+1. **Clone this repository** (if you haven't already):
+
+   ```bash
+   git clone https://github.com/your-repo/video-preview-generator.git
+   cd video-preview-generator
+   ```
+
+2. **Pull the Python HTTP template**:
+
+   ```bash
+   faas-cli template store pull python3-http
+   ```
+
+3. **Review and customize the stack.yaml file if needed**:
+
+   Update the `s3_endpoint_url` and `s3_bucket` values in the stack.yaml file if you're using S3 storage:
+
+   ```yaml
+   environment:
+     s3_bucket: your-bucket-name
+     s3_endpoint_url: https://your-s3-endpoint.com
+   ```
+
+4. **Deploy the function**:
+
+   ```bash
+   # Build and deploy the function in one command
+   faas-cli up -f stack.yaml
+   
+   # Or deploy separately:
+   faas-cli build -f stack.yaml
+   faas-cli push -f stack.yaml
+   faas-cli deploy -f stack.yaml
+   ```
+
+5. **Verify the function is deployed**:
+
+   ```bash
+   faas-cli list
+   ```
+
+   You should see `video-preview` in the list of functions.
+
+## Using the Video Preview Generator
+
+### Method 1: Using the save_video.py Script
+
+1. **Install required Python packages**:
+
+   ```bash
+   pip install -t requirements.txt
+   ```
+
+2. **Run the script with a video URL**:
+
+   ```bash
+   python save_video.py "https://example.com/path/to/video.mp4" [output_path]
+   ```
+
+   - The first argument is the URL of the video to process
+   - The optional second argument is the directory where to save the output file (defaults to current directory)
+
+3. **Check the output**:
+
+   The script will save the video preview in the specified directory (or current directory) and display the path.
+
+### Method 2: Using Direct API Requests
+
+1. **Send a request to the function**:
+
+   ```bash
+   curl -X POST \
+     http://127.0.0.1:8080/function/video-preview \
+     -H 'Content-Type: application/json' \
+     -d '{"url": "https://example.com/path/to/video.mp4"}'
+   ```
+
+2. **Process the response**:
+
+   The response will contain JSON with:
+   - Base64-encoded video content
+   - Filename
+   - Content type
+   - Status message
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Function timeout issues**:
+
+   If you're processing large videos, you might encounter timeout issues. Modify the timeout settings in stack.yaml:
+
+   ```yaml
+   environment:
+     write_timeout: 10m2s
+     read_timeout: 10m2s
+     exec_timeout: 10m
+   ```
+
+2. **Port forwarding disconnects**:
+
+   If your port-forwarding disconnects, restart it:
+
+   ```bash
+   kubectl port-forward -n openfaas svc/gateway 8080:8080 &
+   ```
+
+3. **Function deployment fails**:
+
+   Check logs for the function deployment:
+
+   ```bash
+   kubectl logs -n openfaas-fn deploy/video-preview
+   ```
+
+4. **FFmpeg errors**:
+
+   Check if the function deployed correctly and if FFmpeg is installed:
+
+   ```bash
+   # Exec into the function pod
+   kubectl exec -it -n openfaas-fn $(kubectl get pods -n openfaas-fn -l "faas_function=video-preview" -o jsonpath="{.items[0].metadata.name}") -- /bin/sh
+   
+   # Check FFmpeg
+   ffmpeg -version
+   ```
+
+5. **S3 storage issues**:
+
+   Verify your S3 credentials and endpoint URL:
+
+   ```bash
+   # Check if secrets exist
+   faas-cli secret list | grep video-preview
+   ```
+
+### Monitoring and Logs
+
+1. **View function logs**:
+
+   ```bash
+   faas-cli logs video-preview
+   ```
+
+2. **Kubernetes logs**:
+
+   ```bash
+   kubectl logs -n openfaas-fn deploy/video-preview
+   ```
+
+## Advanced Configuration
+
+### Function Configuration Options
+
+The function supports several configuration options through environment variables:
+
+- `samples`: Number of video samples to take (default: 4)
+- `sample_duration`: Duration in seconds of each sample (default: 2)
+- `scale`: Video scaling options (format: width:height)
+- `format`: Output video format (default: mp4)
+- `s3_output_prefix`: Prefix for S3 object keys (default: output)
+- `debug`: Enable debug logging (true/false)
+
