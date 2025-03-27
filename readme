@@ -195,6 +195,7 @@ This step is optional if you want to store video previews in S3-compatible stora
 
    ```bash
    faas-cli list
+   arkade info openfaas
    ```
 
    You should see `video-preview` in the list of functions.
